@@ -1,0 +1,12 @@
+
+import RouteMapGoogle, { LatLng, Bathroom } from './RouteMapGoogle.web';
+
+type RouteMapWebProps = {
+  start: LatLng;
+  end: LatLng;
+  bathrooms: Bathroom[];
+};
+
+export default function RouteMapWeb(props: RouteMapWebProps) {
+  return <RouteMapGoogle {...props} />;
+}
