@@ -1,4 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
+// ...existing code...
+let MapView, Marker, PROVIDER_GOOGLE;
+if (Platform.OS !== 'web') {
+  // @ts-ignore
+  ({ MapView, Marker, PROVIDER_GOOGLE } = require('react-native-maps'));
+}
 import { Platform } from 'react-native';
 import {
   View,
@@ -17,6 +23,7 @@ import { BathroomService } from '../services/bathroomService';
 import { Bathroom, SearchFilters } from '../types/bathroom';
 import { LinearGradient } from 'expo-linear-gradient';
 
+const MAP_HEIGHT = 220;
 export default function BathroomListScreen() {
   const { location } = useLocation();
   const [bathrooms, setBathrooms] = useState<Bathroom[]>([]);
@@ -108,10 +115,9 @@ export default function BathroomListScreen() {
 
   const searchBathrooms = async () => {
     if (!location) return;
-    
     setLoading(true);
     try {
-      const results = await BathroomService.searchNearby(
+      const results = await BathroomService.searchNearbyFirestore(
         location.coords.latitude,
         location.coords.longitude,
         filters
@@ -130,15 +136,29 @@ export default function BathroomListScreen() {
     setRefreshing(false);
   };
 
+
+  // Synonym map for bathroom search
+  const BATHROOM_SYNONYMS = [
+    'bathroom', 'restroom', 'public restroom', 'toilet', 'washroom', 'wc', 'lavatory', 'loo', 'public toilet', 'men', 'women', 'gender neutral', 'accessible', 'family restroom', 'changing table'
+  ];
+
+  const normalize = (str: string) => str.toLowerCase().replace(/[^a-z0-9 ]/g, '');
+
   const filterBathrooms = () => {
     let filtered = bathrooms;
 
-    // Apply search query
     if (searchQuery.trim()) {
-      filtered = filtered.filter(bathroom =>
-        bathroom.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        bathroom.address.toLowerCase().includes(searchQuery.toLowerCase())
-      );
+      const query = normalize(searchQuery);
+      // If the query matches a synonym, search for all synonyms
+      const matchedSynonyms = BATHROOM_SYNONYMS.filter(syn => query.includes(syn));
+      const terms = matchedSynonyms.length > 0 ? matchedSynonyms : [query];
+
+      filtered = filtered.filter(bathroom => {
+        const name = normalize(bathroom.name);
+        const address = normalize(bathroom.address);
+        // Match if any term is in name or address
+        return terms.some(term => name.includes(term) || address.includes(term));
+      });
     }
 
     setFilteredBathrooms(filtered);
@@ -349,13 +369,52 @@ export default function BathroomListScreen() {
     );
   }
 
+  const initialRegion = {
+    latitude: location.coords.latitude,
+    longitude: location.coords.longitude,
+    latitudeDelta: 0.04,
+    longitudeDelta: 0.04,
+  };
+
   return (
     <View style={styles.container}>
+
+      {/* Map with markers (native only) */}
+      {Platform.OS !== 'web' && MapView && (
+        <MapView
+          style={{ width: '100%', height: MAP_HEIGHT }}
+          provider={PROVIDER_GOOGLE}
+          initialRegion={initialRegion}
+          region={initialRegion}
+          showsUserLocation
+        >
+          {filteredBathrooms.map(bathroom => (
+            <Marker
+              key={bathroom.id}
+              coordinate={{ latitude: bathroom.latitude, longitude: bathroom.longitude }}
+              title={bathroom.name}
+              description={bathroom.address}
+            />
+          ))}
+        </MapView>
+      )}
+
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Nearby Bathrooms</Text>
-        <Text style={styles.headerSubtitle}>
-          Find the perfect bathroom for your needs
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View>
+            <Text style={styles.headerTitle}>Nearby Bathrooms</Text>
+            <Text style={styles.headerSubtitle}>
+              Find the perfect bathroom for your needs
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={{ backgroundColor: '#4A90E2', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 8, marginLeft: 12 }}
+            onPress={onRefresh}
+            disabled={loading || refreshing}
+          >
+            <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 16 }}>{loading || refreshing ? 'Refreshing...' : 'Refresh'}</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
 

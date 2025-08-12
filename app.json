@@ -41,6 +41,9 @@
           "locationAlwaysAndWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location to find nearby bathrooms."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyAJonjxDsKHATA7GznRH-7idVM0p3PYBek"
+    }
   }
 }

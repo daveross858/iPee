@@ -1,3 +1,4 @@
+console.log('App loaded - latest build');
 import React, { useState, useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
@@ -5,11 +6,15 @@ import { StatusBar } from 'expo-status-bar';
 import { View, Text, StyleSheet, Alert } from 'react-native';
 import * as Location from 'expo-location';
 
+
 import HomeScreen from './src/screens/HomeScreen';
-import MapScreen from './src/screens/MapScreen';
+import MapScreen from './MapScreen';
 import RouteScreen from './src/screens/RouteScreen';
 import BathroomListScreen from './src/screens/BathroomListScreen';
-import { LocationContext } from './src/context/LocationContext';
+import { LocationProvider } from './src/context/LocationContext';
+
+import Constants from 'expo-constants';
+import { loadGoogleMapsScript } from './src/services/loadGoogleMapsScript';
 
 export type RootStackParamList = {
   Home: undefined;
@@ -21,6 +26,15 @@ export type RootStackParamList = {
 const Stack = createStackNavigator<RootStackParamList>();
 
 export default function App() {
+  // Load Google Maps JS API for web (with Places library)
+  React.useEffect(() => {
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      const apiKey = Constants.expoConfig?.extra?.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
+      if (apiKey) {
+        loadGoogleMapsScript(apiKey);
+      }
+    }
+  }, []);
   // Inject global style for web scroll fix
   React.useEffect(() => {
     if (typeof window !== 'undefined' && typeof document !== 'undefined') {
@@ -44,52 +58,9 @@ export default function App() {
       };
     }
   }, []);
-  const [location, setLocation] = useState<Location.LocationObject | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        let { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          setErrorMsg('Permission to access location was denied');
-          setLoading(false);
-          return;
-        }
-
-        let currentLocation = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
-        setLocation(currentLocation);
-        setLoading(false);
-      } catch (error) {
-        setErrorMsg('Error getting location');
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>Getting your location...</Text>
-        <StatusBar style="auto" />
-      </View>
-    );
-  }
-
-  if (errorMsg) {
-    return (
-      <View style={styles.errorContainer}>
-        <Text style={styles.errorText}>{errorMsg}</Text>
-        <StatusBar style="auto" />
-      </View>
-    );
-  }
 
   return (
-    <LocationContext.Provider value={{ location, setLocation }}>
+    <LocationProvider>
       <NavigationContainer>
         <Stack.Navigator
           initialRouteName="Home"
@@ -103,30 +74,14 @@ export default function App() {
             },
           }}
         >
-          <Stack.Screen 
-            name="Home" 
-            component={HomeScreen} 
-            options={{ title: 'iPee - Bathroom Finder' }}
-          />
-          <Stack.Screen 
-            name="Map" 
-            component={MapScreen} 
-            options={{ title: 'Find Bathrooms' }}
-          />
-          <Stack.Screen 
-            name="Route" 
-            component={RouteScreen} 
-            options={{ title: 'Plan Route' }}
-          />
-          <Stack.Screen 
-            name="BathroomList" 
-            component={BathroomListScreen} 
-            options={{ title: 'Nearby Bathrooms' }}
-          />
+          <Stack.Screen name="Home" component={HomeScreen} options={{ title: 'iPee - Bathroom Finder' }} />
+          <Stack.Screen name="Map" component={MapScreen} options={{ title: 'Find Bathrooms' }} />
+          <Stack.Screen name="Route" component={RouteScreen} options={{ title: 'Plan Route' }} />
+          <Stack.Screen name="BathroomList" component={BathroomListScreen} options={{ title: 'Nearby Bathrooms' }} />
         </Stack.Navigator>
       </NavigationContainer>
       <StatusBar style="auto" />
-    </LocationContext.Provider>
+    </LocationProvider>
   );
 }
 

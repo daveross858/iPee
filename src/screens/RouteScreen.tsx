@@ -18,10 +18,19 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useLocation } from '../context/LocationContext';
 import { BathroomService } from '../services/bathroomService';
+import { fetchPlaceSuggestions, fetchPlaceDetails } from '../services/googlePlaces';
 import { Bathroom, Route, RoutePoint } from '../types/bathroom';
 import { reverseGeocodeAsync } from '../services/reverseGeocode';
+import { geocodeAddressAsync } from '../services/geocode';
 import { LinearGradient } from 'expo-linear-gradient';
+import { speak } from '../services/voice';
 function RouteScreen() {
+  // Helper to strip HTML from Google instructions
+  function stripHtml(html: string) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    return tmp.textContent || tmp.innerText || '';
+  }
   const { location } = useLocation();
   const [startLocation, setStartLocation] = useState('');
   const [currentAddress, setCurrentAddress] = useState('');
@@ -31,75 +40,87 @@ function RouteScreen() {
   const [routeBathrooms, setRouteBathrooms] = useState<Bathroom[]>([]);
   const [loading, setLoading] = useState(false);
   const [currentRoute, setCurrentRoute] = useState<Route | null>(null);
-  // Typeahead for end location
-  const [bathrooms, setBathrooms] = useState<Bathroom[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [activeSuggestion, setActiveSuggestion] = useState(0);
+  // Google Places typeahead for start/end
+  // Navigation state
+  const [navigating, setNavigating] = useState(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  // Step-by-step directions (web only)
+  const [directionsSteps, setDirectionsSteps] = useState<Array<{ instruction: string; distance: string; duration: string }>>([]);
+  const [currentDirectionStep, setCurrentDirectionStep] = useState(0);
+  const [startSuggestions, setStartSuggestions] = useState<any[]>([]);
+  const [endSuggestions, setEndSuggestions] = useState<any[]>([]);
+  const [showStartSuggestions, setShowStartSuggestions] = useState(false);
+  const [showEndSuggestions, setShowEndSuggestions] = useState(false);
+  const [activeStartSuggestion, setActiveStartSuggestion] = useState(0);
+  const [activeEndSuggestion, setActiveEndSuggestion] = useState(0);
   const endInputRef = useRef(null);
+  const startInputRef = useRef(null);
 
-  useEffect(() => {
-    // Load all bathrooms for typeahead
-    async function fetchBathrooms() {
-      // Use mock location if not available
-      const lat = location?.coords.latitude || 40.7580;
-      const lng = location?.coords.longitude || -73.9855;
-      // Load all bathrooms for typeahead (ignore distance)
-      const results = await BathroomService.searchNearby(lat, lng, {
-        maxDistance: 1000000, // 1000km, effectively disables distance filter
-        isFree: false,
-        isAccessible: false,
-        hasChangingTable: false,
-        isOpen: false,
-        minRating: 0,
-      });
-      setBathrooms(results);
+
+  // Google Places typeahead for web
+  const handlePlaceTypeahead = async (input: string, setSuggestions: any) => {
+    if (Platform.OS === 'web' && input.length > 1) {
+      const suggestions = await fetchPlaceSuggestions(input);
+      setSuggestions(suggestions);
+    } else {
+      setSuggestions([]);
     }
-    fetchBathrooms();
-  }, [location]);
-
-  const getSuggestions = () => {
-    if (!endLocation.trim()) return [];
-    return bathrooms
-      .filter(bathroom =>
-        bathroom.name.toLowerCase().includes(endLocation.toLowerCase()) ||
-        bathroom.address.toLowerCase().includes(endLocation.toLowerCase())
-      )
-      .slice(0, 5);
   };
 
-  // Keyboard navigation for suggestions
-  const handleKeyDown = (e: any) => {
-    const suggestions = getSuggestions();
-    if (!showSuggestions || suggestions.length === 0) return;
+
+  // Google-style suggestions for start/end
+  const getStartSuggestions = () => (Platform.OS === 'web' ? startSuggestions : []);
+  const getEndSuggestions = () => (Platform.OS === 'web' ? endSuggestions : []);
+
+  // Keyboard navigation for Google Places suggestions (web only)
+  const handleKeyDown = (e: any, which: 'start' | 'end') => {
+    if (Platform.OS !== 'web') return;
+    const suggestions = which === 'start' ? getStartSuggestions() : getEndSuggestions();
+    const show = which === 'start' ? showStartSuggestions : showEndSuggestions;
+    const active = which === 'start' ? activeStartSuggestion : activeEndSuggestion;
+    const setActive = which === 'start' ? setActiveStartSuggestion : setActiveEndSuggestion;
+    const setShow = which === 'start' ? setShowStartSuggestions : setShowEndSuggestions;
+    const setValue = which === 'start' ? setStartLocation : setEndLocation;
+    if (!show || suggestions.length === 0) return;
     if (e.key === 'ArrowDown') {
-      setActiveSuggestion((prev) => (prev + 1) % suggestions.length);
+      setActive((prev: number) => (prev + 1) % suggestions.length);
       e.preventDefault && e.preventDefault();
     } else if (e.key === 'ArrowUp') {
-      setActiveSuggestion((prev) => (prev - 1 + suggestions.length) % suggestions.length);
+      setActive((prev: number) => (prev - 1 + suggestions.length) % suggestions.length);
       e.preventDefault && e.preventDefault();
     } else if (e.key === 'Enter') {
-      if (suggestions[activeSuggestion]) {
-        setEndLocation(suggestions[activeSuggestion].name);
-        setShowSuggestions(false);
+      if (suggestions[active]) {
+        setValue(suggestions[active].description);
+        setShow(false);
         e.preventDefault && e.preventDefault();
       }
     } else if (e.key === 'Escape') {
-      setShowSuggestions(false);
+      setShow(false);
       e.preventDefault && e.preventDefault();
     }
   };
 
-  // Attach real keydown event for web
+  // Attach real keydown event for web (start and end fields)
+  useEffect(() => {
+    if (Platform.OS === 'web' && startInputRef.current) {
+      // @ts-ignore
+      const node = startInputRef.current._inputElement || startInputRef.current;
+      if (!node) return;
+      const listener = (e: KeyboardEvent) => handleKeyDown(e, 'start');
+      node.addEventListener('keydown', listener);
+      return () => node.removeEventListener('keydown', listener);
+    }
+  }, [showStartSuggestions, activeStartSuggestion, startLocation, startSuggestions]);
   useEffect(() => {
     if (Platform.OS === 'web' && endInputRef.current) {
       // @ts-ignore
       const node = endInputRef.current._inputElement || endInputRef.current;
       if (!node) return;
-      const listener = (e: KeyboardEvent) => handleKeyDown(e);
+      const listener = (e: KeyboardEvent) => handleKeyDown(e, 'end');
       node.addEventListener('keydown', listener);
       return () => node.removeEventListener('keydown', listener);
     }
-  }, [showSuggestions, activeSuggestion, endLocation, bathrooms]);
+  }, [showEndSuggestions, activeEndSuggestion, endLocation, endSuggestions]);
 
   // Highlight match helper
   const highlightMatch = (text: string, query: string) => {
@@ -120,12 +141,14 @@ function RouteScreen() {
       console.log('Location object:', location);
       if (location) {
         setAddressLoading(true);
-        const addr = await reverseGeocodeAsync(location.coords.latitude, location.coords.longitude);
-        console.log('Reverse geocode result:', addr);
-        setCurrentAddress(addr);
-        setAddressLoading(false);
-        // Only set startLocation if user hasn't edited it
-        setStartLocation(prev => (startLocationEdited ? prev : addr));
+  const addr = await reverseGeocodeAsync(location.coords.latitude, location.coords.longitude);
+  console.log('Reverse geocode result:', addr);
+  let fallback = 'Current Location';
+  const displayAddr = addr && addr.trim() !== '' ? addr : fallback;
+  setCurrentAddress(displayAddr);
+  setAddressLoading(false);
+  // Only set startLocation if user hasn't edited it
+  setStartLocation(prev => (startLocationEdited ? prev : displayAddr));
       } else {
         setCurrentAddress('');
         setStartLocation('');
@@ -137,26 +160,68 @@ function RouteScreen() {
   }, [location]);
 
   const planRoute = async () => {
-    if (!startLocation || !endLocation) {
-      Alert.alert('Error', 'Please enter both start and end locations');
+    setNavigating(false);
+    setCurrentStep(0);
+    if (!endLocation) {
+      Alert.alert('Error', 'Please enter an end location');
       return;
     }
 
-    if (!location) {
-      Alert.alert('Error', 'Location not available');
-      return;
+    // If startLocation is empty or 'Current Location', use GPS
+    let startLat = null;
+    let startLng = null;
+    let startName = startLocation;
+    if (!startLocation || startLocation === 'Current Location') {
+      if (!location) {
+        Alert.alert('Error', 'Location not available');
+        return;
+      }
+      startLat = location.coords.latitude;
+      startLng = location.coords.longitude;
+      startName = 'Current Location';
+    } else {
+      // Geocode the start location
+      const startCoords = await geocodeAddressAsync(startLocation);
+      if (!startCoords) {
+        Alert.alert('Error', 'Could not find the start location');
+        return;
+      }
+      startLat = startCoords.latitude;
+      startLng = startCoords.longitude;
     }
 
     setLoading(true);
     try {
-      // In a real app, you would use a routing service like Google Directions API
-      // For now, we'll simulate finding bathrooms along a route
+      // Geocode the end location to get coordinates
+      const endCoords = await geocodeAddressAsync(endLocation);
+      if (!endCoords) {
+        Alert.alert('Error', 'Could not find the end location');
+        setLoading(false);
+        return;
+      }
+
+      // Calculate distance using Haversine formula
+      function toRad(x: number) { return x * Math.PI / 180; }
+      function haversine(lat1: number, lon1: number, lat2: number, lon2: number) {
+        const R = 6371000; // meters
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+      }
+      const totalDistance = Math.round(haversine(startLat, startLng, endCoords.latitude, endCoords.longitude));
+      // Estimate time: assume 40 miles/hour average (urban driving)
+      const miles = totalDistance * 0.000621371;
+  const estimatedTime = Math.round((miles / 55) * 60); // in minutes
+
       const bathrooms = await BathroomService.searchAlongRoute(
-        location.coords.latitude,
-        location.coords.longitude,
-        // Mock end coordinates (in real app, geocode the end location)
-        location.coords.latitude + 0.01,
-        location.coords.longitude + 0.01,
+        startLat,
+        startLng,
+        endCoords.latitude,
+        endCoords.longitude,
         {
           maxDistance: 10000, // 10km
           isFree: false,
@@ -169,29 +234,30 @@ function RouteScreen() {
 
       setRouteBathrooms(bathrooms);
 
-      // Create a mock route
-      const mockRoute: Route = {
+      // Create a route with real coordinates
+      const route: Route = {
         id: Date.now().toString(),
         startPoint: {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          name: startLocation,
+          latitude: startLat,
+          longitude: startLng,
+          name: startName,
           type: 'start',
         },
         endPoint: {
-          latitude: location.coords.latitude + 0.01,
-          longitude: location.coords.longitude + 0.01,
+          latitude: endCoords.latitude,
+          longitude: endCoords.longitude,
           name: endLocation,
           type: 'end',
         },
         bathrooms: bathrooms,
-        totalDistance: 1500, // Mock distance in meters
-        estimatedTime: 20, // Mock time in minutes
+        totalDistance,
+        estimatedTime,
         createdAt: new Date().toISOString(),
       };
 
-      setCurrentRoute(mockRoute);
+      setCurrentRoute(route);
     } catch (error) {
+      console.error('Error in planRoute:', error);
       Alert.alert('Error', 'Failed to plan route');
     } finally {
       setLoading(false);
@@ -202,6 +268,187 @@ function RouteScreen() {
     if (location) {
       setStartLocation('Current Location');
     }
+  };
+
+  // Navigation steps: start, each bathroom, end
+  const getNavigationSteps = () => {
+    if (!currentRoute) return [];
+    const steps = [
+      { type: 'start', name: currentRoute.startPoint.name, latitude: currentRoute.startPoint.latitude, longitude: currentRoute.startPoint.longitude },
+      ...currentRoute.bathrooms.map((b) => ({ type: 'bathroom', name: b.name, latitude: b.latitude, longitude: b.longitude })),
+      { type: 'end', name: currentRoute.endPoint.name, latitude: currentRoute.endPoint.latitude, longitude: currentRoute.endPoint.longitude },
+    ];
+    return steps;
+  };
+
+  // Google Maps-like step one: "Head toward [next stop]"
+  // Adds ETA and distance to each instruction
+  const getNavigationInstruction = () => {
+    const steps = getNavigationSteps();
+    if (!navigating || !steps.length) return '';
+    const step = steps[currentStep];
+    if (!step) return '';
+
+    // Helper to format ETA and distance
+    const getEtaAndDistance = (fromIdx: number, toIdx: number) => {
+      if (!currentRoute) return '';
+      const allPoints = [currentRoute.startPoint, ...currentRoute.bathrooms, currentRoute.endPoint];
+      if (fromIdx < 0 || toIdx >= allPoints.length) return '';
+      // Haversine distance
+      const toRad = (x: number) => x * Math.PI / 180;
+      const haversine = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+        const R = 6371000;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+      };
+      let dist = 0;
+      for (let i = fromIdx; i < toIdx; i++) {
+        dist += haversine(
+          allPoints[i].latitude, allPoints[i].longitude,
+          allPoints[i+1].latitude, allPoints[i+1].longitude
+        );
+      }
+      const miles = dist * 0.000621371;
+      const timeMin = Math.round((miles / 55) * 60);
+      const eta = timeMin > 60 ? `${Math.floor(timeMin/60)}h ${timeMin%60}m` : `${timeMin} min`;
+      return `(${miles.toFixed(2)} mi, ETA: ${eta})`;
+    };
+
+    if (currentStep === 0) {
+      // Step one: Head toward first bathroom or destination
+      const next = steps[1];
+      if (next) {
+        const etaDist = getEtaAndDistance(0, 1);
+        if (next.type === 'bathroom') return `Head toward bathroom: ${next.name} ${etaDist}`;
+        if (next.type === 'end') return `Head toward your destination: ${next.name} ${etaDist}`;
+      }
+      return `Start at ${step.name}`;
+    }
+    if (step.type === 'bathroom') {
+      const etaDist = getEtaAndDistance(currentStep-1, currentStep);
+      return `Stop at bathroom: ${step.name} ${etaDist}`;
+    }
+    if (step.type === 'end') {
+      const etaDist = getEtaAndDistance(currentStep-1, currentStep);
+      return `Arrive at destination: ${step.name} ${etaDist}`;
+    }
+    return '';
+  };
+
+  const handleStartNavigation = () => {
+    setNavigating(true);
+    setCurrentStep(0);
+    setCurrentDirectionStep(0);
+    setTimeout(() => {
+      if (directionsSteps.length > 0) {
+        const step = directionsSteps[0];
+        if (step && step.instruction) speak(stripHtml(step.instruction) + `, ${step.distance}, ${step.duration}`);
+      } else {
+        const instruction = getNavigationInstruction();
+        if (instruction) speak(instruction);
+      }
+    }, 300);
+  };
+
+  const handleNextStep = () => {
+    if (directionsSteps.length > 0) {
+      if (currentDirectionStep < directionsSteps.length - 1) {
+        setCurrentDirectionStep((prev) => {
+          const next = prev + 1;
+          setTimeout(() => {
+            const step = directionsSteps[next];
+            if (step && step.instruction) speak(stripHtml(step.instruction) + `, ${step.distance}, ${step.duration}`);
+          }, 300);
+          return next;
+        });
+      } else {
+        setNavigating(false);
+        setCurrentStep(0);
+        setCurrentDirectionStep(0);
+        speak('You have arrived at your destination!');
+        Alert.alert('Route Complete', 'You have arrived at your destination!');
+      }
+      return;
+    }
+    // Fallback: old logic
+    const steps = getNavigationSteps();
+    if (currentStep < steps.length - 1) {
+      setCurrentStep((prev) => {
+        const next = prev + 1;
+        setTimeout(() => {
+          const instruction = getNavigationInstructionForStep(next);
+          if (instruction) speak(instruction);
+        }, 300);
+        return next;
+      });
+    } else {
+      setNavigating(false);
+      setCurrentStep(0);
+      speak('You have arrived at your destination!');
+      Alert.alert('Route Complete', 'You have arrived at your destination!');
+    }
+  };
+
+  // Helper to get instruction for a specific step
+  const getNavigationInstructionForStep = (stepIdx: number) => {
+    const steps = getNavigationSteps();
+    const step = steps[stepIdx];
+    if (!step) return '';
+    const getEtaAndDistance = (fromIdx: number, toIdx: number) => {
+      if (!currentRoute) return '';
+      const allPoints = [currentRoute.startPoint, ...currentRoute.bathrooms, currentRoute.endPoint];
+      if (fromIdx < 0 || toIdx >= allPoints.length) return '';
+      const toRad = (x: number) => x * Math.PI / 180;
+      const haversine = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+        const R = 6371000;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+      };
+      let dist = 0;
+      for (let i = fromIdx; i < toIdx; i++) {
+        dist += haversine(
+          allPoints[i].latitude, allPoints[i].longitude,
+          allPoints[i+1].latitude, allPoints[i+1].longitude
+        );
+      }
+      const miles = dist * 0.000621371;
+      const timeMin = Math.round((miles / 55) * 60);
+      const eta = timeMin > 60 ? `${Math.floor(timeMin/60)}h ${timeMin%60}m` : `${timeMin} min`;
+      return `(${miles.toFixed(2)} mi, ETA: ${eta})`;
+    };
+    if (stepIdx === 0) {
+      const next = steps[1];
+      if (next) {
+        const etaDist = getEtaAndDistance(0, 1);
+        if (next.type === 'bathroom') return `Head toward bathroom: ${next.name} ${etaDist}`;
+        if (next.type === 'end') return `Head toward your destination: ${next.name} ${etaDist}`;
+      }
+      return `Start at ${step.name}`;
+    }
+    if (step.type === 'bathroom') {
+      const etaDist = getEtaAndDistance(stepIdx-1, stepIdx);
+      return `Stop at bathroom: ${step.name} ${etaDist}`;
+    }
+    if (step.type === 'end') {
+      const etaDist = getEtaAndDistance(stepIdx-1, stepIdx);
+      return `Arrive at destination: ${step.name} ${etaDist}`;
+    }
+    return '';
+  };
+
+  const handleStopNavigation = () => {
+    setNavigating(false);
+    setCurrentStep(0);
   };
 
   const getRouteSummary = () => {
@@ -226,13 +473,17 @@ function RouteScreen() {
           <View style={styles.routeInfoItem}>
             <Ionicons name="map" size={16} color="#50C878" />
             <Text style={styles.routeInfoText}>
-              Distance: {currentRoute.totalDistance}m
+              Distance: {(currentRoute.totalDistance * 0.000621371).toFixed(2)} mi
             </Text>
           </View>
           <View style={styles.routeInfoItem}>
             <Ionicons name="time" size={16} color="#FFD700" />
             <Text style={styles.routeInfoText}>
-              Time: {currentRoute.estimatedTime} min
+              Time: {(() => {
+                const h = Math.floor(currentRoute.estimatedTime / 60);
+                const m = currentRoute.estimatedTime % 60;
+                return h > 0 ? `${h}h ${m}m` : `${m} min`;
+              })()}
             </Text>
           </View>
         </View>
@@ -304,28 +555,65 @@ function RouteScreen() {
         </Text>
       </View>
 
+
       <View style={styles.inputContainer}>
         <View style={styles.inputGroup}>
           <Text style={styles.inputLabel}>Start Location</Text>
-          <View style={styles.inputRow}>
+          <View style={[styles.inputRow, { position: 'relative', marginBottom: (Platform.OS === 'web' && showStartSuggestions && getStartSuggestions().length > 0) ? 260 : 0 }]}> 
             <TextInput
+              ref={startInputRef}
               style={styles.textInput}
-              value={addressLoading ? 'Fetching address…' : (startLocation || (!addressLoading && !currentAddress ? 'Address not available' : startLocation))}
+              value={addressLoading ? 'Fetching address…' : (startLocation || 'Current Location')}
               editable={!addressLoading}
-              onChangeText={text => {
+              onChangeText={async text => {
                 setStartLocation(text);
                 setStartLocationEdited(true);
+                if (Platform.OS === 'web') {
+                  setShowStartSuggestions(!!text);
+                  setActiveStartSuggestion(0);
+                  await handlePlaceTypeahead(text, setStartSuggestions);
+                }
               }}
               placeholder="Enter start location"
               placeholderTextColor="#999"
+              onFocus={() => Platform.OS === 'web' && setShowStartSuggestions(!!startLocation)}
+              onBlur={() => Platform.OS === 'web' && setTimeout(() => setShowStartSuggestions(false), 250)}
             />
+            {Platform.OS === 'web' && showStartSuggestions && getStartSuggestions().length > 0 && (
+              <View style={styles.suggestionsDropdown}>
+                {getStartSuggestions().map((suggestion, idx) => (
+                  <TouchableOpacity
+                    key={suggestion.place_id}
+                    style={[styles.suggestionItem, idx === activeStartSuggestion && styles.suggestionItemActive]}
+                    onPress={async () => {
+                      setShowStartSuggestions(false);
+                      setActiveStartSuggestion(idx);
+                      setStartLocation(suggestion.description);
+                      setStartLocationEdited(true);
+                      const details = await fetchPlaceDetails(suggestion.place_id);
+                      if (details && details.geometry && details.geometry.location) {
+                        // setStartCoords(details.geometry.location)
+                      }
+                    }}
+                  >
+                    <Text style={styles.suggestionText}>{suggestion.structured_formatting?.main_text || suggestion.description}</Text>
+                    <Text style={styles.suggestionSubText}>{suggestion.structured_formatting?.secondary_text || ''}</Text>
+                  </TouchableOpacity>
+                ))}
+                <View style={styles.suggestionPowered}><Ionicons name="logo-google" size={14} color="#888" /><Text style={styles.suggestionPoweredText}>Google Places</Text></View>
+              </View>
+            )}
             <TouchableOpacity
               style={styles.currentLocationButton}
               onPress={async () => {
                 if (location) {
                   const addr = await reverseGeocodeAsync(location.coords.latitude, location.coords.longitude);
                   setCurrentAddress(addr);
-                  setStartLocation(addr);
+                  setStartLocation('Current Location');
+                  // If end location is filled, immediately plan route
+                  if (endLocation) {
+                    await planRoute();
+                  }
                 }
               }}
             >
@@ -336,66 +624,138 @@ function RouteScreen() {
 
         <View style={styles.inputGroup}>
           <Text style={styles.inputLabel}>End Location</Text>
-          <View style={{ position: 'relative' }}>
+          <View style={[styles.inputRow, { position: 'relative', marginBottom: (Platform.OS === 'web' && showEndSuggestions && getEndSuggestions().length > 0) ? 260 : 0 }]}>
             <TextInput
               ref={endInputRef}
               style={styles.textInput}
               value={endLocation}
-              onChangeText={text => {
+              onChangeText={async text => {
                 setEndLocation(text);
-                setShowSuggestions(!!text);
-                setActiveSuggestion(0);
+                if (Platform.OS === 'web') {
+                  setShowEndSuggestions(!!text);
+                  setActiveEndSuggestion(0);
+                  await handlePlaceTypeahead(text, setEndSuggestions);
+                }
               }}
               placeholder="Enter destination"
               placeholderTextColor="#999"
-              onFocus={() => setShowSuggestions(!!endLocation)}
-              onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-              // onKeyPress removed; handled by real DOM event for web
+              onFocus={() => Platform.OS === 'web' && setShowEndSuggestions(!!endLocation)}
+              onBlur={() => Platform.OS === 'web' && setTimeout(() => setShowEndSuggestions(false), 250)}
             />
-            {showSuggestions && getSuggestions().length > 0 && (
+            {Platform.OS === 'web' && showEndSuggestions && getEndSuggestions().length > 0 && (
               <View style={styles.suggestionsDropdown}>
-                {getSuggestions().map((suggestion, idx) => (
+                {getEndSuggestions().map((suggestion, idx) => (
                   <TouchableOpacity
-                    key={suggestion.id}
-                    style={[styles.suggestionItem, idx === activeSuggestion && styles.suggestionItemActive]}
-                    onPress={() => {
-                      setEndLocation(suggestion.name);
-                      setShowSuggestions(false);
+                    key={suggestion.place_id}
+                    style={[styles.suggestionItem, idx === activeEndSuggestion && styles.suggestionItemActive]}
+                    onPress={async () => {
+                      setShowEndSuggestions(false);
+                      setActiveEndSuggestion(idx);
+                      setEndLocation(suggestion.description);
+                      const details = await fetchPlaceDetails(suggestion.place_id);
+                      if (details && details.geometry && details.geometry.location) {
+                        // setEndCoords(details.geometry.location)
+                      }
                     }}
                   >
-                    <Text style={styles.suggestionText}>
-                      {highlightMatch(suggestion.name, endLocation)}
-                    </Text>
-                    <Text style={styles.suggestionSubText}>
-                      {highlightMatch(suggestion.address, endLocation)}
-                    </Text>
+                    <Text style={styles.suggestionText}>{suggestion.structured_formatting?.main_text || suggestion.description}</Text>
+                    <Text style={styles.suggestionSubText}>{suggestion.structured_formatting?.secondary_text || ''}</Text>
                   </TouchableOpacity>
                 ))}
-                <View style={styles.suggestionPowered}><Ionicons name="logo-google" size={14} color="#888" /><Text style={styles.suggestionPoweredText}>Suggestions</Text></View>
+                <View style={styles.suggestionPowered}><Ionicons name="logo-google" size={14} color="#888" /><Text style={styles.suggestionPoweredText}>Google Places</Text></View>
               </View>
             )}
           </View>
         </View>
 
-        <TouchableOpacity
-          style={styles.planButton}
-          onPress={planRoute}
-          disabled={loading}
-        >
-          <LinearGradient
-            colors={['#4A90E2', '#357ABD']}
-            style={styles.planButtonGradient}
+
+        {/* Show Find Route button until a route is picked, then show Start/Stop Route buttons */}
+        {!currentRoute && !loading && (
+          <TouchableOpacity
+            style={styles.planButton}
+            onPress={() => { planRoute(); }}
+            disabled={loading}
           >
-            {loading ? (
-              <ActivityIndicator size="small" color="white" />
-            ) : (
+            <LinearGradient
+              colors={['#4A90E2', '#357ABD']}
+              style={styles.planButtonGradient}
+            >
+              <Ionicons name="search" size={20} color="white" />
+              <Text style={styles.planButtonText}>Find Route</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        )}
+        {currentRoute && !navigating && (
+          <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 16 }}>
+            <TouchableOpacity
+              style={[styles.planButton, { backgroundColor: '#4A90E2', flex: 1 }]}
+              onPress={handleStartNavigation}
+            >
+              <LinearGradient
+                colors={['#4A90E2', '#357ABD']}
+                style={styles.planButtonGradient}
+              >
+                <Ionicons name="play" size={20} color="white" />
+                <Text style={styles.planButtonText}>Start Route</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.planButton, { backgroundColor: '#FF6B6B', flex: 1 }]}
+              onPress={() => setCurrentRoute(null)}
+            >
+              <LinearGradient
+                colors={['#FF6B6B', '#FF8C8C']}
+                style={styles.planButtonGradient}
+              >
+                <Ionicons name="stop" size={20} color="white" />
+                <Text style={styles.planButtonText}>Stop Route</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        )}
+        {currentRoute && navigating && (
+          <View style={{ flexDirection: 'column', alignItems: 'center', marginTop: 16 }}>
+            {directionsSteps.length > 0 ? (
               <>
-                <Ionicons name="map" size={20} color="white" />
-                <Text style={styles.planButtonText}>Plan Route</Text>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 12 }}>
+                  Step {currentDirectionStep + 1} of {directionsSteps.length}
+                </Text>
+                <Text style={{ fontSize: 16, marginBottom: 12 }}>
+                  {stripHtml(directionsSteps[currentDirectionStep]?.instruction)}
+                  {directionsSteps[currentDirectionStep]?.distance ? ` (${directionsSteps[currentDirectionStep]?.distance}, ${directionsSteps[currentDirectionStep]?.duration})` : ''}
+                </Text>
               </>
+            ) : (
+              <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 12 }}>{getNavigationInstruction()}</Text>
             )}
-          </LinearGradient>
-        </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: 16 }}>
+              <TouchableOpacity
+                style={[styles.planButton, { backgroundColor: '#4A90E2', flex: 1 }]}
+                onPress={handleNextStep}
+              >
+                <LinearGradient
+                  colors={['#4A90E2', '#357ABD']}
+                  style={styles.planButtonGradient}
+                >
+                  <Ionicons name="arrow-forward" size={20} color="white" />
+                  <Text style={styles.planButtonText}>Next</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.planButton, { backgroundColor: '#FF6B6B', flex: 1 }]}
+                onPress={handleStopNavigation}
+              >
+                <LinearGradient
+                  colors={['#FF6B6B', '#FF8C8C']}
+                  style={styles.planButtonGradient}
+                >
+                  <Ionicons name="stop" size={20} color="white" />
+                  <Text style={styles.planButtonText}>Stop</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
       </View>
 
       {currentRoute && getRouteSummary()}
@@ -413,11 +773,13 @@ function RouteScreen() {
       )}
 
       {/* Show map for route on web */}
-      {typeof window !== 'undefined' && Platform.OS === 'web' && (
+      {typeof window !== 'undefined' && Platform.OS === 'web' && currentRoute && (
         <RouteMapWeb
-          start={currentRoute?.startPoint}
-          end={currentRoute?.endPoint}
+          start={currentRoute.startPoint}
+          end={currentRoute.endPoint}
           bathrooms={routeBathrooms}
+          navigationStep={navigating ? currentStep : null}
+          onDirectionsReady={setDirectionsSteps}
         />
       )}
 
@@ -436,7 +798,7 @@ function RouteScreen() {
 const styles = StyleSheet.create({
   suggestionsDropdown: {
     position: 'absolute',
-    top: 44,
+    top: '100%',
     left: 0,
     right: 0,
     backgroundColor: '#FFF',
@@ -445,12 +807,12 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
-    elevation: 3,
-    zIndex: 10,
+  elevation: 20,
+  zIndex: 2000,
     maxHeight: 240,
     borderWidth: 1,
     borderColor: '#E0E0E0',
-    overflow: 'hidden',
+  marginBottom: 24, // Add space below dropdown
   },
   suggestionItem: {
     paddingVertical: 12,
@@ -552,8 +914,10 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   planButton: {
-    borderRadius: 12,
-    overflow: 'hidden',
+  borderRadius: 12,
+  overflow: 'hidden',
+  marginTop: 24, // Add space above button
+  zIndex: 0, // Lowered so dropdown is always above
   },
   planButtonGradient: {
     flexDirection: 'row',

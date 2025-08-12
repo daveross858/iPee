@@ -1,44 +1,31 @@
-import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Alert,
-  ActivityIndicator,
-  Platform,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { View, Text, StyleSheet, Dimensions, FlatList, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
+import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { useLocation } from '../context/LocationContext';
 import { BathroomService } from '../services/bathroomService';
-import { reverseGeocodeAsync } from '../services/reverseGeocode';
 import { Bathroom, SearchFilters } from '../types/bathroom';
-import { LinearGradient } from 'expo-linear-gradient';
 
-// Web map imports
-// Web map components (typed as any to avoid TS errors)
-let MapContainer: any, TileLayer: any, WebMarker: any, Popup: any;
-// Native map components
-let MapView: any, NativeMarker: any, Callout: any;
-if (Platform.OS === 'web') {
-  // Only require on web to avoid breaking native
-  // @ts-ignore
-  ({ MapContainer, TileLayer, Marker: WebMarker, Popup } = require('react-leaflet'));
-  // Import leaflet CSS
-  require('leaflet/dist/leaflet.css');
-} else {
-  // Only require on native to avoid breaking web
-  // @ts-ignore
-  ({ default: MapView, Marker: NativeMarker, Callout } = require('react-native-maps'));
-}
+const { width, height } = Dimensions.get('window');
+const ASPECT_RATIO = width / 300;
+const LATITUDE_DELTA = 0.04;
+const LONGITUDE_DELTA = LATITUDE_DELTA * ASPECT_RATIO;
+const PAGE_SIZE = 5;
 
-export default function MapScreen() {
+type FetchState = 'idle' | 'loading' | 'error';
+
+const MapScreen: React.FC = () => {
   const { location } = useLocation();
   const [bathrooms, setBathrooms] = useState<Bathroom[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [filters, setFilters] = useState<SearchFilters>({
-    maxDistance: 5000, // 5km
+  const [filteredBathrooms, setFilteredBathrooms] = useState<Bathroom[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [search, setSearch] = useState<string>('');
+  const [page, setPage] = useState<number>(1);
+  const [fetchState, setFetchState] = useState<FetchState>('idle');
+  const [errorMsg, setErrorMsg] = useState<string>('');
+  const flatListRef = useRef<FlatList<Bathroom>>(null);
+  const searchTimeout = useRef<NodeJS.Timeout | null>(null);
+  const [filters] = useState<SearchFilters>({
+    maxDistance: 5000,
     isFree: false,
     isAccessible: false,
     hasChangingTable: false,
@@ -46,31 +33,11 @@ export default function MapScreen() {
     minRating: 0,
   });
 
-  // Address for current location
-  const [currentAddress, setCurrentAddress] = useState<string>('');
-
-  useEffect(() => {
-    const fetchAddress = async () => {
-      if (location) {
-        const addr = await reverseGeocodeAsync(location.coords.latitude, location.coords.longitude);
-        setCurrentAddress(addr);
-      } else {
-        setCurrentAddress('');
-      }
-    };
-    fetchAddress();
-  }, [location]);
-
-  useEffect(() => {
-    if (location) {
-      searchBathrooms();
-    }
-  }, [location, filters]);
-
-  const searchBathrooms = async () => {
+  // Fetch bathrooms
+  const searchBathrooms = useCallback(async () => {
     if (!location) return;
-    
-    setLoading(true);
+    setFetchState('loading');
+    setErrorMsg('');
     try {
       const results = await BathroomService.searchNearby(
         location.coords.latitude,
@@ -78,40 +45,63 @@ export default function MapScreen() {
         filters
       );
       setBathrooms(results);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to search for bathrooms');
-    } finally {
-      setLoading(false);
+      setFetchState('idle');
+    } catch (err) {
+      setFetchState('error');
+      setErrorMsg('Failed to fetch bathrooms. Please try again.');
     }
+  }, [location, filters]);
+
+  useEffect(() => {
+    if (location) {
+      searchBathrooms();
+    }
+  }, [location, filters, searchBathrooms]);
+
+  // Debounced search
+  useEffect(() => {
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    searchTimeout.current = setTimeout(() => {
+      if (!search.trim()) {
+        setFilteredBathrooms(bathrooms);
+      } else {
+        const q = search.toLowerCase();
+        setFilteredBathrooms(
+          bathrooms.filter(b =>
+            b.name.toLowerCase().includes(q) ||
+            b.address.toLowerCase().includes(q)
+          )
+        );
+      }
+      setPage(1);
+    }, 350);
+    return () => {
+      if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    };
+  }, [search, bathrooms]);
+
+  // Pagination
+  const pagedBathrooms = filteredBathrooms.slice(0, page * PAGE_SIZE);
+  const hasMore = pagedBathrooms.length < filteredBathrooms.length;
+
+  const onEndReached = () => {
+    if (hasMore) setPage(p => p + 1);
   };
 
-  const toggleFilter = (key: keyof SearchFilters) => {
-    if (key === 'maxDistance') return;
-    
-    setFilters(prev => ({
-      ...prev,
-      [key]: !prev[key],
-    }));
+  const onMarkerPress = (id: string, index: number) => {
+    setSelectedId(id);
+    flatListRef.current?.scrollToIndex({ index, viewPosition: 0.5 });
   };
 
-  const updateDistance = (distance: number) => {
-    setFilters(prev => ({
-      ...prev,
-      maxDistance: distance,
-    }));
-  };
-
-  const getMarkerColor = (bathroom: Bathroom) => {
-    if (!bathroom.isOpen) return '#FF6B6B';
-    if (bathroom.isFree) return '#50C878';
-    return '#4A90E2';
-  };
-
-  const getMarkerIcon = (bathroom: Bathroom) => {
-    if (!bathroom.isOpen) return 'close-circle';
-    if (bathroom.isAccessible) return 'accessibility';
-    if (bathroom.hasChangingTable) return 'baby';
-    return 'water';
+  const onListItemPress = (id: string, index: number, bathroom: Bathroom) => {
+    setSelectedId(id);
+    // Optionally animate map to marker (requires MapView ref)
+    // mapRef.current?.animateToRegion({
+    //   latitude: bathroom.latitude,
+    //   longitude: bathroom.longitude,
+    //   latitudeDelta: LATITUDE_DELTA,
+    //   longitudeDelta: LONGITUDE_DELTA,
+    // });
   };
 
   if (!location) {
@@ -122,261 +112,191 @@ export default function MapScreen() {
     );
   }
 
-  // Filters UI (shared)
-  const filtersUI = (
-    <View style={styles.filtersContainer}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <TouchableOpacity
-          style={[styles.filterChip, filters.isFree && styles.filterChipActive]}
-          onPress={() => toggleFilter('isFree')}
-        >
-          <Ionicons 
-            name="card" 
-            size={16} 
-            color={filters.isFree ? 'white' : '#4A90E2'} 
-          />
-          <Text style={[styles.filterText, filters.isFree && styles.filterTextActive]}>
-            Free
-          </Text>
-        </TouchableOpacity>
+  const initialRegion: Region = {
+    latitude: location.coords.latitude,
+    longitude: location.coords.longitude,
+    latitudeDelta: LATITUDE_DELTA,
+    longitudeDelta: LONGITUDE_DELTA,
+  };
 
-        <TouchableOpacity
-          style={[styles.filterChip, filters.isAccessible && styles.filterChipActive]}
-          onPress={() => toggleFilter('isAccessible')}
-        >
-          <Ionicons 
-            name="accessibility" 
-            size={16} 
-            color={filters.isAccessible ? 'white' : '#4A90E2'} 
-          />
-          <Text style={[styles.filterText, filters.isAccessible && styles.filterTextActive]}>
-            Accessible
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.filterChip, filters.hasChangingTable && styles.filterChipActive]}
-          onPress={() => toggleFilter('hasChangingTable')}
-        >
-          <Ionicons 
-            name="woman" 
-            size={16} 
-            color={filters.hasChangingTable ? 'white' : '#4A90E2'} 
-          />
-          <Text style={[styles.filterText, filters.hasChangingTable && styles.filterTextActive]}>
-            Changing Table
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.filterChip, filters.isOpen && styles.filterChipActive]}
-          onPress={() => toggleFilter('isOpen')}
-        >
-          <Ionicons 
-            name="time" 
-            size={16} 
-            color={filters.isOpen ? 'white' : '#4A90E2'} 
-          />
-          <Text style={[styles.filterText, filters.isOpen && styles.filterTextActive]}>
-            Open Now
-          </Text>
-        </TouchableOpacity>
-      </ScrollView>
-
-      <View style={styles.distanceContainer}>
-        <Text style={styles.distanceLabel}>Max Distance: {filters.maxDistance / 1000}km</Text>
-        <View style={styles.distanceSlider}>
-          {[1, 2, 5, 10].map((km) => (
-            <TouchableOpacity
-              key={km}
-              style={[
-                styles.distanceOption,
-                filters.maxDistance === km * 1000 && styles.distanceOptionActive
-              ]}
-              onPress={() => updateDistance(km * 1000)}
-            >
-              <Text style={[
-                styles.distanceOptionText,
-                filters.maxDistance === km * 1000 && styles.distanceOptionTextActive
-              ]}>
-                {km}km
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-    </View>
-  );
-
-  // Results info (shared)
-  const resultsInfo = (
-    <View style={styles.resultsInfo}>
-      <Text style={styles.resultsText}>
-        Found {bathrooms.length} bathroom{bathrooms.length !== 1 ? 's' : ''}
-      </Text>
-    </View>
-  );
-
-  // Loading overlay (shared)
-  const loadingOverlay = loading && (
-    <View style={styles.loadingOverlay}>
-      <ActivityIndicator size="large" color="#4A90E2" />
-      <Text style={styles.loadingText}>Searching for bathrooms...</Text>
-    </View>
-  );
-
-
-  if (Platform.OS === 'web') {
-    // Web: Use react-leaflet
-    return (
-      <View style={styles.container}>
-        {currentAddress ? (
-          <View style={styles.addressBar}>
-            <Ionicons name="location" size={18} color="#4A90E2" style={{ marginRight: 6 }} />
-            <Text style={styles.addressText}>{currentAddress}</Text>
-          </View>
-        ) : null}
-        {filtersUI}
-        <View style={{ flex: 1, minHeight: 400 }}>
-          <MapContainer
-            center={[location.coords.latitude, location.coords.longitude]}
-            zoom={15}
-            style={{ height: '400px', width: '100%', borderRadius: 16 }}
-            scrollWheelZoom={true}
-          >
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
-            {bathrooms.map((bathroom) => (
-              <WebMarker
-                key={bathroom.id}
-                position={[bathroom.latitude, bathroom.longitude]}
-              >
-                <Popup>
-                  <div>
-                    <strong>{bathroom.name}</strong><br />
-                    {bathroom.address}<br />
-                    Rating: {bathroom.rating?.toFixed(1) || 'N/A'}<br />
-                    Distance: {(bathroom.distance || 0) / 1000}km<br />
-                    {bathroom.isFree && <span>Free<br /></span>}
-                    {bathroom.isAccessible && <span>Accessible<br /></span>}
-                    {bathroom.hasChangingTable && <span>Changing Table<br /></span>}
-                  </div>
-                </Popup>
-              </WebMarker>
-            ))}
-          </MapContainer>
-        </View>
-        {loadingOverlay}
-        {resultsInfo}
-      </View>
-    );
-  }
-
-  // Native: Use react-native-maps
   return (
     <View style={styles.container}>
-      {currentAddress ? (
-        <View style={styles.addressBar}>
-          <Ionicons name="location" size={18} color="#4A90E2" style={{ marginRight: 6 }} />
-          <Text style={styles.addressText}>{currentAddress}</Text>
-        </View>
-      ) : null}
-      {filtersUI}
       <MapView
         style={styles.map}
-        initialRegion={{
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          latitudeDelta: 0.01,
-          longitudeDelta: 0.01,
-        }}
-        showsUserLocation={true}
-        showsMyLocationButton={true}
+        provider={PROVIDER_GOOGLE}
+        initialRegion={initialRegion}
+        showsUserLocation
       >
-        {bathrooms.map((bathroom) => (
-          <NativeMarker
+        {pagedBathrooms.map((bathroom, idx) => (
+          <Marker
             key={bathroom.id}
-            coordinate={{
-              latitude: bathroom.latitude,
-              longitude: bathroom.longitude,
-            }}
-            pinColor={getMarkerColor(bathroom)}
-          >
-            <Callout>
-              <View style={styles.calloutContainer}>
-                <Text style={styles.calloutTitle}>{bathroom.name}</Text>
-                <Text style={styles.calloutAddress}>{bathroom.address}</Text>
-                <View style={styles.calloutDetails}>
-                  <View style={styles.calloutDetail}>
-                    <Ionicons 
-                      name="star" 
-                      size={14} 
-                      color="#FFD700" 
-                    />
-                    <Text style={styles.calloutDetailText}>
-                      {bathroom.rating?.toFixed(1) || 'N/A'}
-                    </Text>
-                  </View>
-                  <View style={styles.calloutDetail}>
-                    <Ionicons 
-                      name="location" 
-                      size={14} 
-                      color="#4A90E2" 
-                    />
-                    <Text style={styles.calloutDetailText}>
-                      {(bathroom.distance || 0) / 1000}km
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.calloutFeatures}>
-                  {bathroom.isFree && (
-                    <View style={styles.featureTag}>
-                      <Text style={styles.featureTagText}>Free</Text>
-                    </View>
-                  )}
-                  {bathroom.isAccessible && (
-                    <View style={styles.featureTag}>
-                      <Text style={styles.featureTagText}>Accessible</Text>
-                    </View>
-                  )}
-                  {bathroom.hasChangingTable && (
-                    <View style={styles.featureTag}>
-                      <Text style={styles.featureTagText}>Changing Table</Text>
-                    </View>
-                  )}
-                </View>
-              </View>
-            </Callout>
-          </NativeMarker>
+            coordinate={{ latitude: bathroom.latitude, longitude: bathroom.longitude }}
+            pinColor={selectedId === bathroom.id ? '#4A90E2' : 'red'}
+            onPress={() => onMarkerPress(bathroom.id, idx)}
+          />
         ))}
       </MapView>
-      {loadingOverlay}
-      {resultsInfo}
+      <View style={styles.searchBarContainer}>
+        <TextInput
+          style={styles.searchBar}
+          placeholder="Search bathrooms..."
+          value={search}
+          onChangeText={setSearch}
+          autoCorrect={false}
+          autoCapitalize="none"
+        />
+      </View>
+      <View style={styles.listContainer}>
+        {fetchState === 'loading' && (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="small" color="#4A90E2" />
+            <Text style={styles.loadingText}>Loading bathrooms...</Text>
+          </View>
+        )}
+        {fetchState === 'error' && (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>{errorMsg}</Text>
+            <TouchableOpacity onPress={searchBathrooms} style={styles.retryButton}>
+              <Text style={styles.retryButtonText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        <FlatList
+          ref={flatListRef}
+          data={pagedBathrooms}
+          keyExtractor={item => item.id}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ paddingHorizontal: 12 }}
+          renderItem={({ item, index }) => (
+            <TouchableOpacity
+              style={[styles.card, selectedId === item.id && styles.cardSelected]}
+              onPress={() => onListItemPress(item.id, index, item)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.cardTitle}>{item.name}</Text>
+              <Text style={styles.cardAddress}>{item.address}</Text>
+              <Text style={styles.cardDetails}>
+                {item.rating ? `Rating: ${item.rating.toFixed(1)}  ` : ''}
+                {item.isFree ? 'Free' : 'Paid'}
+              </Text>
+            </TouchableOpacity>
+          )}
+          onEndReached={onEndReached}
+          onEndReachedThreshold={0.2}
+          ListEmptyComponent={() =>
+            fetchState === 'idle' ? (
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyText}>No bathrooms found.</Text>
+              </View>
+            ) : null
+          }
+        />
+      </View>
     </View>
   );
-}
+};
+
+export default MapScreen;
 
 const styles = StyleSheet.create({
-  addressBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F0F6FF',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
-  },
-  addressText: {
-    fontSize: 15,
-    color: '#333',
-    flex: 1,
-    flexWrap: 'wrap',
-  },
   container: {
     flex: 1,
     backgroundColor: '#F5F5F5',
+  },
+  map: {
+    width: '100%',
+    height: height * 0.55,
+  },
+  searchBarContainer: {
+    position: 'absolute',
+    top: height * 0.55 + 8,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 16,
+    zIndex: 2,
+  },
+  searchBar: {
+    backgroundColor: 'white',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    marginBottom: 8,
+  },
+  listContainer: {
+    position: 'absolute',
+    top: height * 0.55 + 56,
+    left: 0,
+    right: 0,
+    paddingBottom: 8,
+    zIndex: 1,
+  },
+  loadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  loadingText: {
+    marginLeft: 8,
+    color: '#4A90E2',
+    fontSize: 16,
+  },
+  errorContainer: {
+    alignItems: 'center',
+    padding: 16,
+  },
+  retryButton: {
+    marginTop: 8,
+    backgroundColor: '#4A90E2',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  retryButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    padding: 16,
+  },
+  emptyText: {
+    color: '#888',
+    fontSize: 16,
+  },
+  card: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    padding: 16,
+    marginRight: 12,
+    width: width * 0.7,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  cardSelected: {
+    borderColor: '#4A90E2',
+    borderWidth: 2,
+  },
+  cardTitle: {
+    fontWeight: 'bold',
+    fontSize: 16,
+    marginBottom: 4,
+  },
+  cardAddress: {
+    color: '#666',
+    fontSize: 14,
+    marginBottom: 4,
+  },
+  cardDetails: {
+    fontSize: 13,
+    color: '#444',
   },
   centerContainer: {
     flex: 1,
@@ -387,154 +307,5 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: 18,
     color: '#666',
-  },
-  filtersContainer: {
-    backgroundColor: 'white',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
-  },
-  filterChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F0F0F0',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    marginRight: 12,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-  },
-  filterChipActive: {
-    backgroundColor: '#4A90E2',
-    borderColor: '#4A90E2',
-  },
-  filterText: {
-    marginLeft: 6,
-    fontSize: 14,
-    color: '#666',
-    fontWeight: '500',
-  },
-  filterTextActive: {
-    color: 'white',
-  },
-  distanceContainer: {
-    marginTop: 16,
-  },
-  distanceLabel: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 8,
-  },
-  distanceSlider: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  distanceOption: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 16,
-    backgroundColor: '#F0F0F0',
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-  },
-  distanceOptionActive: {
-    backgroundColor: '#4A90E2',
-    borderColor: '#4A90E2',
-  },
-  distanceOptionText: {
-    fontSize: 14,
-    color: '#666',
-    fontWeight: '500',
-  },
-  distanceOptionTextActive: {
-    color: 'white',
-  },
-  map: {
-    flex: 1,
-  },
-  loadingOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(255, 255, 255, 0.8)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 16,
-    color: '#666',
-  },
-  resultsInfo: {
-    position: 'absolute',
-    bottom: 20,
-    left: 20,
-    right: 20,
-    backgroundColor: 'white',
-    padding: 16,
-    borderRadius: 12,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  resultsText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-    textAlign: 'center',
-  },
-  calloutContainer: {
-    width: 200,
-    padding: 12,
-  },
-  calloutTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 4,
-  },
-  calloutAddress: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 8,
-  },
-  calloutDetails: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  calloutDetail: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  calloutDetailText: {
-    fontSize: 12,
-    color: '#666',
-    marginLeft: 4,
-  },
-  calloutFeatures: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  featureTag: {
-    backgroundColor: '#4A90E2',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginRight: 6,
-    marginBottom: 4,
-  },
-  featureTagText: {
-    fontSize: 10,
-    color: 'white',
-    fontWeight: '500',
   },
 });
