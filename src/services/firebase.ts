@@ -6,13 +6,12 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyD2FYUCvUWqioemkcK0xgKIrZJ-bbY6Eew",
-  authDomain: "ipee-firebase.firebaseapp.com",
-  projectId: "ipee-firebase",
-  storageBucket: "ipee-firebase.firebasestorage.app",
-  messagingSenderId: "883750588455",
-  appId: "1:883750588455:web:b8bc32b41360c5ec37be02",
-  measurementId: "G-89DGLGJ2P0"
+  apiKey: 'YOUR_API_KEY',
+  authDomain: 'YOUR_AUTH_DOMAIN',
+  projectId: 'YOUR_PROJECT_ID',
+  storageBucket: 'YOUR_STORAGE_BUCKET',
+  messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+  appId: 'YOUR_APP_ID',
 };
 
 const app = initializeApp(firebaseConfig);

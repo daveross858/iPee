@@ -2,7 +2,7 @@
 // Requires: npm install firebase-admin node-fetch
 
 const admin = require('firebase-admin');
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+const fetch = require('node-fetch');
 const serviceAccount = require('./firebaseServiceAccount.json'); // Download from Firebase Console
 
 admin.initializeApp({
@@ -32,15 +32,14 @@ function toBathroom(doc) {
     isAccessible: !!doc.accessible,
     hasChangingTable: !!doc.changing_table,
     rating: doc.upvote - doc.downvote,
-    hours: ''
-    // id field removed; Firestore will assign
+    hours: '',
+    id: undefined, // Firestore will assign
   };
 }
 
-async function importBathrooms() {
+async function importBathrooms(maxPages = 10) {
   let total = 0;
-  let page = 1;
-  while (true) {
+  for (let page = 1; page <= maxPages; page++) {
     const data = await fetchRefugeBathrooms(page);
     if (!data.length) break;
     for (const doc of data) {
@@ -50,12 +49,11 @@ async function importBathrooms() {
       total++;
     }
     console.log(`Imported page ${page}, total so far: ${total}`);
-    page++;
   }
   console.log(`Done. Imported ${total} bathrooms.`);
 }
 
-importBathrooms().catch(err => {
+importBathrooms(10).catch(err => {
   console.error(err);
   process.exit(1);
 });
