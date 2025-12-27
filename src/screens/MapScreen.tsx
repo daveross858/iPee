@@ -1,6 +1,12 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, Dimensions, FlatList, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+// Avoid static import of react-native-maps so Metro (web) doesn't attempt to load native-only internals
+let MapView: any, Marker: any, PROVIDER_GOOGLE: any, Region: any;
+import { Platform } from 'react-native';
+if (Platform.OS !== 'web') {
+  // @ts-ignore - require at runtime on native only
+  ({ default: MapView, Marker, PROVIDER_GOOGLE } = require('react-native-maps'));
+}
 import { useLocation } from '../context/LocationContext';
 import { BathroomService } from '../services/bathroomService';
 import { Bathroom, SearchFilters } from '../types/bathroom';
@@ -112,7 +118,7 @@ const MapScreen: React.FC = () => {
     );
   }
 
-  const initialRegion: Region = {
+  const initialRegion: { latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number } = {
     latitude: location.coords.latitude,
     longitude: location.coords.longitude,
     latitudeDelta: LATITUDE_DELTA,

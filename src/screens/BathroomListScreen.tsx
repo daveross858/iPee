@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Platform } from 'react-native';
 // ...existing code...
 let MapView, Marker, PROVIDER_GOOGLE;
 if (Platform.OS !== 'web') {
+  // Require react-native-maps only on native to prevent Metro resolving native internals on web
   // @ts-ignore
   ({ MapView, Marker, PROVIDER_GOOGLE } = require('react-native-maps'));
 }
-import { Platform } from 'react-native';
 import {
   View,
   Text,
