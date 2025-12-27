@@ -8,16 +8,7 @@ import * as Location from 'expo-location';
 
 
 import HomeScreen from './src/screens/HomeScreen';
-// Load MapScreen with platform guard so web bundler picks the web entrypoint
-let MapScreen: any;
-if (typeof navigator !== 'undefined' && navigator.product === 'ReactNative') {
-  MapScreen = require('./MapScreen').default;
-} else if (typeof window !== 'undefined') {
-  // Web: prefer the web-specific entry
-  MapScreen = require('./MapScreen.web').default;
-} else {
-  MapScreen = require('./MapScreen').default;
-}
+import MapScreen from './src/screens/MapScreen';
 import RouteScreen from './src/screens/RouteScreen';
 import BathroomListScreen from './src/screens/BathroomListScreen';
 import { LocationProvider } from './src/context/LocationContext';
